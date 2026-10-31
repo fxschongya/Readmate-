@@ -1,23 +1,31 @@
 rules_version = '2';
 service cloud.firestore {
  match /databases/{database}/documents {
-  function signedIn() { return request.auth != null; }
+  function signedIn(){return request.auth != null;}
   match /assignments/{id} {
    allow read: if signedIn() && (resource.data.teacherUid == request.auth.uid || resource.data.studentUid == request.auth.uid);
    allow create: if signedIn() && request.resource.data.teacherUid == request.auth.uid
-     && request.resource.data.studentUid is string
-     && request.resource.data.studentUid.size() >= 20
-     && request.resource.data.title is string && request.resource.data.passage is string
-     && request.resource.data.questions is list;
-   allow update, delete: if signedIn() && resource.data.teacherUid == request.auth.uid && request.resource.data.teacherUid == resource.data.teacherUid && request.resource.data.studentUid == resource.data.studentUid;
+    && request.resource.data.studentUid is string && request.resource.data.studentUid.size() >= 20
+    && request.resource.data.title is string && request.resource.data.passage is string
+    && request.resource.data.questions is list;
+   allow update, delete: if signedIn() && resource.data.teacherUid == request.auth.uid
+    && request.resource.data.teacherUid == resource.data.teacherUid && request.resource.data.studentUid == resource.data.studentUid;
   }
   match /submissions/{id} {
    allow read: if signedIn() && (resource.data.studentUid == request.auth.uid || resource.data.teacherUid == request.auth.uid);
    allow create: if signedIn() && request.resource.data.studentUid == request.auth.uid
-     && request.resource.data.teacherUid is string
-     && request.resource.data.assignmentId is string
-     && get(/databases/$(database)/documents/assignments/$(request.resource.data.assignmentId)).data.studentUid == request.auth.uid
-     && get(/databases/$(database)/documents/assignments/$(request.resource.data.assignmentId)).data.teacherUid == request.resource.data.teacherUid;
+    && request.resource.data.assignmentId is string
+    && request.resource.data.teacherUid is string
+    && exists(/databases/$(database)/documents/assignments/$(request.resource.data.assignmentId))
+    && get(/databases/$(database)/documents/assignments/$(request.resource.data.assignmentId)).data.studentUid == request.auth.uid
+    && get(/databases/$(database)/documents/assignments/$(request.resource.data.assignmentId)).data.teacherUid == request.resource.data.teacherUid
+    && request.resource.data.score is int && request.resource.data.total is int
+    && request.resource.data.total > 0 && request.resource.data.total <= 100
+    && request.resource.data.score >= 0 && request.resource.data.score <= request.resource.data.total
+    && request.resource.data.answers is list && request.resource.data.answers.size() == request.resource.data.total
+    && request.resource.data.articleSnapshot is map
+    && request.resource.data.articleSnapshot.questions is list
+    && request.resource.data.articleSnapshot.questions.size() == request.resource.data.total;
    allow update, delete: if false;
   }
  }
