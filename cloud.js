@@ -70,16 +70,41 @@ const HIDDEN_SUBMISSIONS_KEY='rm_hidden_submissions_v38';
 function hiddenSubmissions(){try{return JSON.parse(localStorage.getItem(HIDDEN_SUBMISSIONS_KEY)||'{}')}catch{return {}}}
 function isCloudRecordHidden(id){return !!hiddenSubmissions()[id]}
 function hideCloudRecord(id){const h=hiddenSubmissions();h[id]=true;localStorage.setItem(HIDDEN_SUBMISSIONS_KEY,JSON.stringify(h))}
-function chooseDeletion(){const v=prompt('删除方式：\\n1 = 本机和云端一起删除（默认）\\n2 = 仅删除本机\\n3 = 仅删除云端\\n\\n请输入 1、2 或 3：','1');if(v===null)return null;if(!['1','2','3'].includes(v.trim())){alert('请输入 1、2 或 3');return null}return v.trim()}
+function chooseDeletion(){
+ return new Promise(resolve=>{
+  const old=document.getElementById('rm-delete-dialog');if(old)old.remove();
+  const overlay=document.createElement('div');overlay.id='rm-delete-dialog';
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(18,27,42,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box';
+  const panel=document.createElement('section');
+  panel.setAttribute('role','dialog');panel.setAttribute('aria-modal','true');panel.setAttribute('aria-labelledby','rm-delete-title');
+  panel.style.cssText='width:min(100%,430px);background:#fff;color:#1f2937;border-radius:20px;padding:24px;box-shadow:0 20px 55px rgba(0,0,0,.25);box-sizing:border-box;font-family:system-ui,-apple-system,sans-serif';
+  panel.innerHTML=`<h2 id="rm-delete-title" style="font-size:21px;margin:0 0 6px">删除这次作答记录</h2>
+   <p style="font-size:14px;color:#64748b;margin:0 0 18px;line-height:1.5">请选择删除范围。其他作答记录不会受到影响。</p>
+   <div style="display:grid;gap:10px">
+    <button type="button" data-mode="2" style="width:100%;padding:15px;text-align:left;border:1px solid #cbd5e1;background:#f8fafc;border-radius:12px;color:#0f172a;font-size:16px;font-weight:650">📱 仅删除本机 <span style="display:block;font-size:12px;font-weight:400;color:#64748b;margin-top:4px">云端成绩保留</span></button>
+    <button type="button" data-mode="3" style="width:100%;padding:15px;text-align:left;border:1px solid #cbd5e1;background:#f8fafc;border-radius:12px;color:#0f172a;font-size:16px;font-weight:650">☁️ 仅删除云端 <span style="display:block;font-size:12px;font-weight:400;color:#64748b;margin-top:4px">本机成绩保留</span></button>
+    <button type="button" data-mode="1" style="width:100%;padding:15px;text-align:left;border:1px solid #fecaca;background:#fff1f2;border-radius:12px;color:#b91c1c;font-size:16px;font-weight:650">🗑️ 本机和云端都删除 <span style="display:block;font-size:12px;font-weight:400;color:#b91c1c;margin-top:4px">两边都删除，请谨慎选择</span></button>
+   </div><button type="button" data-cancel style="display:block;width:100%;padding:13px;border:0;background:transparent;color:#475569;font-size:15px;margin-top:10px">取消</button>`;
+  overlay.append(panel);document.body.append(overlay);
+  const previousFocus=document.activeElement;
+  const finish=(mode)=>{overlay.remove();document.removeEventListener('keydown',onKey);if(previousFocus?.focus)previousFocus.focus();resolve(mode)};
+  const onKey=e=>{if(e.key==='Escape'){e.preventDefault();finish(null)}};
+  document.addEventListener('keydown',onKey);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)finish(null)});
+  panel.querySelector('[data-cancel]').addEventListener('click',()=>finish(null));
+  panel.querySelectorAll('[data-mode]').forEach(btn=>btn.addEventListener('click',()=>finish(btn.dataset.mode)));
+  panel.querySelector('[data-mode="2"]').focus();
+ });
+}
 let deletionBusy=false;
 async function deleteAttempt(localId,cloudId=null){
- if(deletionBusy)return;
+ if(deletionBusy||document.getElementById('rm-delete-dialog'))return;
  if(!user){alert('请先登录账号。');return}
  const local=bridge.getBackupState().attempts.find(a=>a.id===localId);
  const found=cloudId?submissions.find(s=>s.cloudId===cloudId):submissions.find(s=>s.localAttemptId===localId&&s.studentUid===user.uid);
  const pending=getPending().filter(p=>p.attemptId===localId&&p.studentUid===user.uid);
  if(!local&&!found&&!pending.length){alert('未找到这条答题记录，请重新打开页面后重试。');return}
- const mode=chooseDeletion();if(!mode)return;
+ const mode=await chooseDeletion();if(!mode)return;
  if((mode==='1'||mode==='3')&&!found&&!pending.length){
   alert('找不到这条记录对应的云端成绩，不能安全删除云端。可以选择仅删除本机。');return;
  }
