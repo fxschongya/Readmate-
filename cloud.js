@@ -1,9 +1,45 @@
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js';
 import {getAuth,onAuthStateChanged,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
-import {getFirestore,collection,addDoc,doc,setDoc,query,where,onSnapshot,serverTimestamp,deleteDoc} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
+import {getFirestore,collection,addDoc,doc,setDoc,query,where,onSnapshot,serverTimestamp,deleteDoc,getDoc} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
 const cfg=window.READMATE_FIREBASE_CONFIG;
 const bridge=window.readmateBridge;
 let auth,db,user=null,role=localStorage.getItem('rm_role')||'student',studentUid=localStorage.getItem('rm_student_uid')||'',unsubs=[],assignments=[],submissions=[];
+// Each device has its own backup document, preventing one partner/device from overwriting another.
+const DEVICE_KEY='rm_backup_device_v36';
+let deviceId=localStorage.getItem(DEVICE_KEY);
+if(!deviceId){deviceId=(crypto.randomUUID?.()||('device-'+Date.now()+'-'+Math.random().toString(36).slice(2)));localStorage.setItem(DEVICE_KEY,deviceId)}
+let backupTimer=null,backupBusy=false,backupAgain=false;
+function scheduleBackup(){if(!user||!db)return;clearTimeout(backupTimer);backupTimer=setTimeout(()=>backupNow(true),10000)}
+async function backupNow(silent=false){
+ if(!user||!db){if(!silent)say('请先登录并联网，再进行云端备份。');return false}
+ if(backupBusy){backupAgain=true;return false}
+ backupBusy=true;
+ try{
+  const snapshot=bridge.getBackupState();
+  const raw=JSON.stringify(snapshot);
+  // Firestore documents are capped at 1 MiB; leave room for metadata and encoding.
+  if(new Blob([raw]).size>850000)throw Error('备份超过单条云端记录安全容量（约 850 KB），请先导出本机 JSON 备份。');
+  await setDoc(doc(db,'userBackups',user.uid,'devices',deviceId),{
+   ownerUid:user.uid,deviceId,version:36,updatedAt:serverTimestamp(),
+   articleCount:snapshot.articles.length,attemptCount:snapshot.attempts.length,
+   payload:raw
+  });
+  if(!silent)say('云端备份成功：已保存本设备的文章、成绩、生词及草稿。');
+  return true;
+ }catch(err){console.warn('云端备份失败',err);if(!silent)say('云端备份失败：'+err.message);return false}
+ finally{backupBusy=false;if(backupAgain){backupAgain=false;scheduleBackup()}}
+}
+async function restoreBackup(){
+ if(!user||!db){say('请先登录并联网。');return}
+ try{
+  const snap=await getDoc(doc(db,'userBackups',user.uid,'devices',deviceId));
+  if(!snap.exists()){say('本设备尚无云端备份。其他设备的备份不会自动覆盖当前设备。');return}
+  const b=snap.data(), data=JSON.parse(b.payload);
+  if(!confirm('找到本设备云端备份（文章 '+b.articleCount+' 篇，答题 '+b.attemptCount+' 次）。恢复会覆盖当前设备本机数据。建议先导出完整备份。确认继续？'))return;
+  bridge.restoreBackupState(data);
+  say('云端备份已恢复。');
+ }catch(err){say('恢复失败：'+err.message)}
+}
 const PENDING_KEY='readmate_pending_submissions_v32';
 const seenKey=uid=>'rm_seen_cloud_'+uid;
 function seenCloud(uid){try{return JSON.parse(localStorage.getItem(seenKey(uid))||'[]')}catch{return []}}
@@ -142,7 +178,7 @@ root.querySelectorAll('[data-delete-cloud]').forEach(btn=>btn.onclick=()=>delete
 root.querySelectorAll('[data-study]').forEach(btn=>btn.onclick=()=>{const a=assignments.find(a=>a.cloudId===btn.dataset.study);if(a){bridge.upsertCloudArticle(a);bridge.openArticle('cloud-'+a.cloudId)}});
 }
 async function deleteAssignment(id){const a=assignments.find(x=>x.cloudId===id);if(!user||!a){alert('请先登录并等待云端任务同步完成。');return}if(a.teacherUid!==user.uid){alert('只有发布者才能删除云端任务。若只想移除本机文章，请使用「仅从本机移除」。');return}if(!confirm('确定永久删除「'+a.title+'」发给'+(a.studentUid===user.uid?'自己':'对象')+'的这一份云端任务？联网同步后接收者设备也会移除副本；历史成绩保留。此操作不可撤销。'))return;try{await deleteDoc(doc(db,'assignments',id));bridge.removeCloudArticles([id]);savePending(getPending().filter(x=>x.payload.assignmentId!==id));say('云端任务已删除。双方设备联网同步后会移除对应副本；历史成绩保留。');rerender()}catch(err){alert('删除失败：'+err.message)}}
-window.readmateCloud={deleteAssignment,render:showCloud,submit:async(article,answers,score,attempt)=>{
+window.readmateCloud={scheduleBackup,backupNow,restoreBackup,deleteAssignment,render:showCloud,submit:async(article,answers,score,attempt)=>{
  if(!cfg||!user||!article.cloudId||article.studentUid!==user.uid){return 'local'}
  const id=(user.uid+'_'+attempt.id).replace(/[^A-Za-z0-9_-]/g,'_');
  const wrongs=answers.flatMap((v,i)=>v===article.questions[i].answer?[]:[{question:article.questions[i].q,chosen:String.fromCharCode(65+v),correct:String.fromCharCode(65+article.questions[i].answer),explanation:article.questions[i].explanation}]);
@@ -152,4 +188,4 @@ window.readmateCloud={deleteAssignment,render:showCloud,submit:async(article,ans
  if(getPending().some(p=>p.id===id)){alert('成绩已保存在本机，等待云端补传。请到「同步」点击重新上传。');return 'pending'}
  return 'synced';
 }};
-if(cfg){try{const app=initializeApp(cfg);auth=getAuth(app);db=getFirestore(app);onAuthStateChanged(auth,u=>{user=u;setupListeners();if(user)flushPending()})}catch(err){console.error(err)}}
+if(cfg){try{const app=initializeApp(cfg);auth=getAuth(app);db=getFirestore(app);onAuthStateChanged(auth,u=>{user=u;setupListeners();if(user){flushPending();scheduleBackup()}})}catch(err){console.error(err)}}
