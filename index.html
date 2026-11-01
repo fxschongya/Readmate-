@@ -218,7 +218,7 @@ async function zhTranslate(text){
  }finally{clearTimeout(timeout)}
 }
 let mdxModulePromise=null;
-function mdxModule(){return mdxModulePromise||(mdxModulePromise=import('./mdx-local.js?v=492'))}
+function mdxModule(){return mdxModulePromise||(mdxModulePromise=import('./mdx-local.js?v=493'))}
 async function initMdxManage(){
  const info=$('mdxStatus');if(!info)return;
  const refresh=async()=>{try{const d=await(await mdxModule()).status();info.textContent=d?`已安装：${d.name} · ${d.count.toLocaleString()} 词条 · ${(d.size/1048576).toFixed(1)} MB · 本机离线可用`:'尚未安装本地词典；当前使用原有在线查词。'}catch(e){info.textContent='本地词典不可用：'+e.message}};
@@ -227,24 +227,34 @@ async function initMdxManage(){
  $('mdxTest').onclick=async()=>{try{const r=await(await mdxModule()).query('significant');if(!r)throw Error('没有找到词条');alert('本地检索成功：'+r.word+'，内容 '+r.html.length+' 字符。中文内容：'+(/[\u3400-\u9fff]/.test(r.html)?'检测到':'未检测到')+'。请进入文章查看排版。')}catch(e){alert('测试失败：'+e.message)}};
  $('mdxDelete').onclick=async()=>{if(!confirm('确定只删除当前设备的离线词典？不会删除任何生词、阅读记录或云端数据。'))return;try{await(await mdxModule()).remove();await refresh()}catch(e){alert(e.message)}};
 }
-function cleanMdxHTML(html){
+// Oxford 9 MDX: definitions live in <def><chn>, examples in <x>.
+// Never show the raw, potentially enormous dictionary HTML in the popup.
+function parseMdxEntry(html){
  const doc=new DOMParser().parseFromString(html,'text/html');
- doc.querySelectorAll('script,style,link,iframe,object,embed,svg,audio,video,form,button').forEach(el=>el.remove());
- // Remove remote media, resource links and scripts; retain only text for safe offline display.
- doc.querySelectorAll('img').forEach(el=>el.remove());
- const lines=[];const walk=node=>{if(node.nodeType===3){const t=node.textContent.replace(/\s+/g,' ').trim();if(t)lines.push(t)}else if(node.nodeType===1){if(['BR','HR'].includes(node.tagName))lines.push('\n');for(const c of node.childNodes)walk(c);if(['P','DIV','LI','H1','H2','H3','H4','TR','H-G','SENSE','DEF','EX'].includes(node.tagName))lines.push('\n')}};
- walk(doc.body);return lines.join(' ').replace(/ *\n */g,'\n').replace(/\n{3,}/g,'\n\n').slice(0,22000).trim();
-}
-function mdxSummary(text){
- const lines=text.split(/\n+/).map(x=>x.trim()).filter(Boolean);
- const candidates=[];
- for(const line of lines){
-  if(!/[\u3400-\u9fff]/.test(line))continue;
-  let z=line.replace(/^[^\u3400-\u9fff]{0,100}/,'').replace(/\s+/g,' ').trim();
-  if(z.length>2&&z.length<260&&!candidates.includes(z))candidates.push(z);
-  if(candidates.length>=3)break;
+ const chinese=t=>(t||'').replace(/\s+/g,' ').trim();
+ const meanings=[];
+ for(const def of doc.querySelectorAll('def')){
+  for(const el of def.querySelectorAll('chn')){
+   const value=chinese(el.textContent);
+   if(value && /[\u3400-\u9fff]/.test(value) && !meanings.includes(value))meanings.push(value);
+  }
+  if(meanings.length>=5)break;
  }
- return candidates.join('；').slice(0,350);
+ // Some entries use a standalone <chn> rather than a <def>.
+ if(!meanings.length)for(const el of doc.querySelectorAll('chn')){
+  if(el.closest('x,example,ex,idiom,colloc'))continue;
+  const value=chinese(el.textContent);
+  if(value && value.length<85 && /[\u3400-\u9fff]/.test(value) && !meanings.includes(value))meanings.push(value);
+  if(meanings.length>=4)break;
+ }
+ let example='',translation='';
+ for(const el of doc.querySelectorAll('x')){
+  const en=chinese(el.getAttribute('wd')||'');
+  const zh=chinese(el.querySelector('chn')?.textContent||'');
+  if(en && zh && en.length<260 && zh.length<260){example=en;translation=zh;break}
+ }
+ const summary=meanings.slice(0,4).join('；');
+ return {summary,meanings:meanings.slice(0,4),example,translation};
 }
 async function tryOfflineWord(w){
  try{const mod=await mdxModule();const installed=await mod.status();if(!installed)return null;
@@ -252,7 +262,7 @@ async function tryOfflineWord(w){
  if(!found){for(const variant of [w.replace(/ies$/,'y'),w.replace(/ing$/,''),w.replace(/ed$/,''),w.replace(/s$/,'')]){if(variant&&variant!==w){found=await mod.query(variant);if(found)break}}}
  if(!found)return null;
  if(found.html.startsWith('@@@LINK=')){const target=found.html.slice(8).replace(/\0/g,'').trim();if(target)found=await mod.query(target)||found}
- const definition=cleanMdxHTML(found.html);return {word:found.word,definition,summary:mdxSummary(definition)};
+ return {word:found.word,...parseMdxEntry(found.html)};
  }catch(err){console.warn('MDX lookup failed',err);return null}
 }
 async function lookup(original){
@@ -266,9 +276,9 @@ async function lookup(original){
  const offline=await tryOfflineWord(w);
  if(req!==wordLookups)return;
  if(offline){
- box.innerHTML=`<div class="row"><h2>${esc(w)}</h2><span class="pill">📚 本地 MDX</span><span class="spacer"></span><button class="close" id="wordClose">✕</button></div><div class="row"><button class="secondary" id="voice">🔊 发音</button><button class="primary" id="saveWord">${state.words[w]?'✓ 已收藏':'＋ 加入生词本'}</button></div><p class="tiny muted">原词条文本 · 不联网 · 词义未自动语境消歧；音频暂用设备朗读</p>${offline.summary?`<div class="notice"><b>中文释义摘录（需结合语境）</b><p>${esc(offline.summary)}</p></div>`:""}<div style="white-space:pre-wrap;line-height:1.7;max-height:50vh;overflow:auto;font-size:14px">${esc(offline.definition)}</div>`;
+ box.innerHTML=`<div class="row"><h2>${esc(w)}</h2><span class="pill">📚 本地 MDX</span><span class="spacer"></span><button class="close" id="wordClose">✕</button></div><div class="row"><button class="secondary" id="voice">🔊 发音</button><button class="primary" id="saveWord">${state.words[w]?'✓ 已收藏':'＋ 加入生词本'}</button></div><p class="tiny muted">牛津词典 · 精简释义</p><div class="notice"><b>中文释义</b><p style="line-height:1.7">${offline.meanings.length?offline.meanings.map((v,i)=>`${i+1}. ${esc(v)}`).join('<br>'):'当前词条未识别到独立中文释义'}</p></div>${offline.example?`<div style="margin-top:12px;line-height:1.65"><b>例句</b><p>${esc(offline.example)}</p>${offline.translation?`<p class="muted">${esc(offline.translation)}</p>`:''}</div>`:''}`;
  $('wordClose').onclick=()=>box.classList.add('hide');$('voice').onclick=()=>speak(w);
- $('saveWord').onclick=()=>{const now=new Date().toISOString(),a=reviewAttempt?.articleSnapshot||article(articleId),existing=state.words[w]||{},sources=Array.isArray(existing.sources)?[...existing.sources]:[];if(a){const ref={articleId:a.id,title:a.title,day:a.day||null,studyDate:a.studyDate||a.publishedDate||'',savedAt:now};if(!sources.some(s=>s.articleId===ref.articleId))sources.push(ref)}else if(!sources.length)sources.push({articleId:'legacy',title:'独立查词 · 来源未记录',day:null,studyDate:'',savedAt:now});state.words[w]={...existing,meaning:offline.summary||existing.meaning||'',zh:offline.summary||existing.zh||'',dictionarySource:'local-mdx',added:existing.added||now,sources};save();$('saveWord').textContent='✓ 已收藏'};
+ $('saveWord').onclick=()=>{const now=new Date().toISOString(),a=reviewAttempt?.articleSnapshot||article(articleId),existing=state.words[w]||{},sources=Array.isArray(existing.sources)?[...existing.sources]:[];if(a){const ref={articleId:a.id,title:a.title,day:a.day||null,studyDate:a.studyDate||a.publishedDate||'',savedAt:now};if(!sources.some(s=>s.articleId===ref.articleId))sources.push(ref)}else if(!sources.length)sources.push({articleId:'legacy',title:'独立查词 · 来源未记录',day:null,studyDate:'',savedAt:now});state.words[w]={...existing,meaning:offline.summary||existing.meaning||'',zh:offline.summary||existing.zh||'',example:offline.example||existing.example||'',dictionarySource:'local-mdx',added:existing.added||now,sources};save();$('saveWord').textContent='✓ 已收藏'};
  return;
  }
 
