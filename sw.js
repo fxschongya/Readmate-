@@ -1,4 +1,4 @@
-const CACHE='readmate-v493-worker-fix';
+const CACHE='readmate-v494-youdao-link';
 const ASSETS=['./','./index.html','./icon.svg','./manifest.webmanifest','./firebase-config.js','./cloud.js?v=491','./mdx-local.js?v=493','./mdx-worker.js?v=493'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith("readmate-v")&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
