@@ -8,7 +8,7 @@ async function dbGet(){const db=await dbOpen();return new Promise((resolve,rejec
 async function dbPut(value){const db=await dbOpen();return new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).put(value,'active');tx.oncomplete=()=>{db.close();resolve()};tx.onerror=()=>{db.close();reject(tx.error)}})}
 async function dbDelete(){const db=await dbOpen();return new Promise((resolve,reject)=>{const tx=db.transaction(STORE,'readwrite');tx.objectStore(STORE).delete('active');tx.oncomplete=()=>{db.close();resolve()};tx.onerror=()=>{db.close();reject(tx.error)}})}
 async function bytes(file,start,len){return new Uint8Array(await file.slice(start,start+len).arrayBuffer())}
-async function decompress(block){const kind=block[0];if(kind===0)return block.slice(8);if(kind!==2)throw Error('此词库使用暂不支持的 LZO 压缩方式');if(!('DecompressionStream'in window))throw Error('当前浏览器不支持解压，请更新 Safari');const stream=new Blob([block.slice(8)]).stream().pipeThrough(new DecompressionStream('deflate'));return new Uint8Array(await new Response(stream).arrayBuffer())}
+async function decompress(block){const kind=block[0];if(kind===0)return block.slice(8);if(kind!==2)throw Error('此词库使用暂不支持的 LZO 压缩方式');if(typeof DecompressionStream === 'undefined')throw Error('当前浏览器不支持解压，请更新 Safari');const stream=new Blob([block.slice(8)]).stream().pipeThrough(new DecompressionStream('deflate'));return new Uint8Array(await new Response(stream).arrayBuffer())}
 function cstr(data,offset){let end=offset;while(end<data.length&&data[end]!==0)end++;return [td.decode(data.subarray(offset,end)),end+1]}
 function normalized(s){return s.toLowerCase().replace(/[\s\-_.']/g,'')}
 
