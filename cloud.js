@@ -1,3 +1,4 @@
+// ReadMate V4.5: three-choice dialog, cache-busted module URL.
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js';
 import {getAuth,onAuthStateChanged,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
 import {getFirestore,collection,addDoc,doc,setDoc,query,where,onSnapshot,serverTimestamp,deleteDoc,getDoc} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
