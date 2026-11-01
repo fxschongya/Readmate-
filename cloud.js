@@ -52,7 +52,8 @@ async function flushPending(){
  try{
    const pending=getPending();let done=0;
    for(const item of pending){
-     if(item.studentUid!==user.uid)continue;
+     if(item.studentUid!==user.uid)continue
+      if(bridge.deletedAttempts()[item.attemptId]){savePending(getPending().filter(p=>p.id!==item.id));continue};
      if(!assignments.some(a=>a.cloudId===item.payload.assignmentId)){continue}
      try{await setDoc(doc(db,'submissions',item.id),{...item.payload,createdAt:serverTimestamp()});done++}
      catch(err){console.warn('云端补传失败',err);break}
@@ -62,6 +63,41 @@ async function flushPending(){
  }finally{flushing=false}
 }
 window.addEventListener('online',()=>flushPending());
+const HIDDEN_SUBMISSIONS_KEY='rm_hidden_submissions_v38';
+function hiddenSubmissions(){try{return JSON.parse(localStorage.getItem(HIDDEN_SUBMISSIONS_KEY)||'{}')}catch{return {}}}
+function isCloudRecordHidden(id){return !!hiddenSubmissions()[id]}
+function hideCloudRecord(id){const h=hiddenSubmissions();h[id]=true;localStorage.setItem(HIDDEN_SUBMISSIONS_KEY,JSON.stringify(h))}
+function chooseDeletion(){const v=prompt('删除方式：\\n1 = 本机和云端一起删除（默认）\\n2 = 仅删除本机\\n3 = 仅删除云端\\n\\n请输入 1、2 或 3：','1');if(v===null)return null;if(!['1','2','3'].includes(v.trim())){alert('请输入 1、2 或 3');return null}return v.trim()}
+async function deleteAttempt(localId,cloudId=null){
+ if(!user){alert('请先登录账号，避免误删其他账号的记录。');return}
+ const local=bridge.getBackupState().attempts.find(a=>a.id===localId);
+ const found=cloudId?submissions.find(s=>s.cloudId===cloudId):submissions.find(s=>s.localAttemptId===localId&&s.studentUid===user.uid);
+ const mode=chooseDeletion();if(!mode)return;
+ if((mode==='1'||mode==='3')&&!found){
+  // If submission is still pending, it has never reached Firestore.
+  const pending=getPending().filter(p=>p.attemptId===localId);
+  if(!pending.length){alert('无法确认这次成绩对应的云端记录。请先同步，或选择仅删除本机。');return}
+ }
+ if(!confirm('确定'+({1:'本机和云端一起删除',2:'仅删除本机',3:'仅删除云端'}[mode])+'这条答题记录吗？此操作不可撤销。'))return;
+ const cloudKey=found?.cloudId;
+ if(mode==='1'||mode==='3'){
+  if(found){
+   if(found.studentUid!==user.uid){alert('只能删除自己提交的成绩。');return}
+   try{await deleteDoc(doc(db,'submissions',cloudKey))}catch(err){alert('云端删除失败，本机未做任何删除：'+err.message);return}
+  }
+  // Always cancel queued upload after successful cloud deletion.
+  savePending(getPending().filter(p=>p.attemptId!==localId));
+ }
+ if(mode==='1'||mode==='2'){
+  if(localId)bridge.deleteLocalAttempt(localId,mode);
+  if(cloudKey)hideCloudRecord(cloudKey);
+ }else{
+  // Keep local record and prevent a queued upload from recreating deleted cloud record.
+  if(localId)bridge.hideAttempt(localId,'cloud-only');
+ }
+ rerender();
+ say('删除完成：'+({1:'本机和云端',2:'仅本机',3:'仅云端'}[mode]));
+}
 const e=bridge.escape;const fmt=t=>bridge.formatDate(t);const order=s=>(s.createdAt?.seconds?new Date(s.createdAt.seconds*1000).toISOString():s.clientTime||'');const attemptIndex=(s,all)=>all.filter(x=>x.assignmentId===s.assignmentId&&order(x)<=order(s)).length;
 const say=msg=>{const p=document.getElementById('cloudMsg');if(p)p.textContent=msg;else alert(msg)};
 function rerender(){if(bridge.currentTab()==='cloud')showCloud();bridge.renderHomeIfVisible()}
@@ -124,6 +160,7 @@ function receivedArchive(){return studyArchive(assignments.filter(a=>a.studentUi
 function cloudHistory(historyRecords=submissions){
  if(!historyRecords.length)return '<p class="muted">还没有收到答题记录。</p>';
  const byDate=new Map();
+ historyRecords=historyRecords.filter(s=>!isCloudRecordHidden(s.cloudId));
  for(const s of historyRecords){const d=submissionDate(s);if(!byDate.has(d))byDate.set(d,[]);byDate.get(d).push(s)}
  return '<p class="tiny muted">按实际提交日期归档。点击日期 → 文章 → 第几次练习，查看完整记录；旧成绩不会删除。</p>'+[...byDate].sort((a,b)=>b[0].localeCompare(a[0])).map(([d,arr])=>{
    const byArticle=new Map();for(const s of arr){const key=s.assignmentId||s.title||'unknown';if(!byArticle.has(key))byArticle.set(key,[]);byArticle.get(key).push(s)}
@@ -140,7 +177,7 @@ function cloudHistory(historyRecords=submissions){
          return `<div class="item"><b>${i+1}. ${e(q.q||'题目')}</b><p class="tiny">${s.studentUid===user.uid?'我的选择':'对方选择'}：${e(label(chosen))} ${chosen===correct?'✅':'❌'}<br>正确答案：${e(label(correct))}</p><p class="tiny muted">${e(q.explanation||'暂无解析')}</p></div>`;
        }).join('');
        const fallback=(s.wrongs||[]).map(w=>`<div class="item tiny">❌ ${e(w.question||'')}<br>${s.studentUid===user.uid?'我的选择':'对方选'} ${e(w.chosen||'')}；正确 ${e(w.correct||'')}<br>${e(w.explanation||'')}</div>`).join('');
-       return `<details style="margin:9px 0 0 10px"><summary style="cursor:pointer;padding:10px 4px">第 ${number} 次 · ${e(order(s).slice(11,16)||'时间未知')} · ${Number(s.score)||0}/${Number(s.total)||0}（${Math.round(100*(Number(s.score)||0)/Math.max(1,Number(s.total)||1))}%）</summary><div style="padding:6px 0 12px">${s.articleSnapshot?.passage?'<details class="item"><summary>查看当时的阅读原文</summary><p style="white-space:pre-wrap">'+e(s.articleSnapshot.passage)+'</p></details>':''}${detail||fallback||'<p class="muted tiny">这条旧记录只保存了分数，暂无完整选项详情。</p>'}</div></details>`;
+       return `<details style="margin:9px 0 0 10px"><summary style="cursor:pointer;padding:10px 4px">第 ${number} 次 · ${e(order(s).slice(11,16)||'时间未知')} · ${Number(s.score)||0}/${Number(s.total)||0}（${Math.round(100*(Number(s.score)||0)/Math.max(1,Number(s.total)||1))}%）</summary><div style="padding:6px 0 12px">${s.articleSnapshot?.passage?'<details class="item"><summary>查看当时的阅读原文</summary><p style="white-space:pre-wrap">'+e(s.articleSnapshot.passage)+'</p></details>':''}${detail||fallback||'<p class="muted tiny">这条旧记录只保存了分数，暂无完整选项详情。</p>'}${s.studentUid===user.uid?`<button class="danger" data-delete-submission="${e(s.cloudId)}">删除这次成绩</button>`:''}</div></details>`;
      }).join('');
      return `<details style="margin:8px 0 0 8px"><summary style="cursor:pointer;padding:10px 4px"><b>${e(first.title||as?.title||'阅读')}</b> · ${e(first.day?'Day '+first.day:'未编号')} · ${items.length} 次</summary>${attempts}</details>`;
    }).join('');
@@ -175,15 +212,17 @@ root.querySelectorAll('[data-publish]').forEach(btn=>btn.onclick=async()=>{
  }finally{btn.disabled=false}
 });
 root.querySelectorAll('[data-delete-cloud]').forEach(btn=>btn.onclick=()=>deleteAssignment(btn.dataset.deleteCloud));
+root.querySelectorAll('[data-delete-submission]').forEach(btn=>btn.onclick=()=>{const sub=submissions.find(x=>x.cloudId===btn.dataset.deleteSubmission);if(sub)deleteAttempt(sub.localAttemptId||'',sub.cloudId)});
 root.querySelectorAll('[data-study]').forEach(btn=>btn.onclick=()=>{const a=assignments.find(a=>a.cloudId===btn.dataset.study);if(a){bridge.upsertCloudArticle(a);bridge.openArticle('cloud-'+a.cloudId)}});
 }
 async function deleteAssignment(id){const a=assignments.find(x=>x.cloudId===id);if(!user||!a){alert('请先登录并等待云端任务同步完成。');return}if(a.teacherUid!==user.uid){alert('只有发布者才能删除云端任务。若只想移除本机文章，请使用「仅从本机移除」。');return}if(!confirm('确定永久删除「'+a.title+'」发给'+(a.studentUid===user.uid?'自己':'对象')+'的这一份云端任务？联网同步后接收者设备也会移除副本；历史成绩保留。此操作不可撤销。'))return;try{await deleteDoc(doc(db,'assignments',id));bridge.removeCloudArticles([id]);savePending(getPending().filter(x=>x.payload.assignmentId!==id));say('云端任务已删除。双方设备联网同步后会移除对应副本；历史成绩保留。');rerender()}catch(err){alert('删除失败：'+err.message)}}
-window.readmateCloud={scheduleBackup,backupNow,restoreBackup,deleteAssignment,render:showCloud,submit:async(article,answers,score,attempt)=>{
- if(!cfg||!user||!article.cloudId||article.studentUid!==user.uid){return 'local'}
+window.readmateCloud={currentUid:()=>user?.uid||null,isActiveAssignment:id=>!!user&&assignments.some(a=>a.cloudId===id&&a.studentUid===user.uid),deleteAttempt,scheduleBackup,backupNow,restoreBackup,deleteAssignment,render:showCloud,submit:async(article,answers,score,attempt)=>{
+ const active=assignments.find(a=>a.cloudId===article.cloudId&&a.studentUid===user?.uid);
+  if(!cfg||!user||!active){return 'local'}
  const id=(user.uid+'_'+attempt.id).replace(/[^A-Za-z0-9_-]/g,'_');
  const wrongs=answers.flatMap((v,i)=>v===article.questions[i].answer?[]:[{question:article.questions[i].q,chosen:String.fromCharCode(65+v),correct:String.fromCharCode(65+article.questions[i].answer),explanation:article.questions[i].explanation}]);
- const payload={assignmentId:article.cloudId,teacherUid:article.teacherUid,studentUid:user.uid,title:article.title,day:article.day||null,studyDate:article.studyDate||article.publishedDate||'',score,total:article.questions.length,answers,wrongs,attemptNo:attempt.attemptNo||1,articleSnapshot:{title:article.title,level:article.level||'',day:article.day||null,studyDate:article.studyDate||'',passage:article.passage,questions:article.questions},clientTime:attempt.time};
- const pending=getPending();if(!pending.some(p=>p.id===id))pending.push({id,studentUid:user.uid,payload});savePending(pending);
+ const payload={assignmentId:active.cloudId,teacherUid:active.teacherUid,studentUid:user.uid,title:article.title,day:article.day||null,studyDate:article.studyDate||article.publishedDate||'',score,total:article.questions.length,answers,wrongs,localAttemptId:attempt.id,attemptNo:attempt.attemptNo||1,articleSnapshot:{title:article.title,level:article.level||'',day:article.day||null,studyDate:article.studyDate||'',passage:article.passage,questions:article.questions},clientTime:attempt.time};
+ const pending=getPending();if(!pending.some(p=>p.id===id))pending.push({id,attemptId:attempt.id,studentUid:user.uid,payload});savePending(pending);
  await flushPending();
  if(getPending().some(p=>p.id===id)){alert('成绩已保存在本机，等待云端补传。请到「同步」点击重新上传。');return 'pending'}
  return 'synced';
