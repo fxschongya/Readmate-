@@ -35,9 +35,9 @@ async function restoreBackup(){
   const snap=await getDoc(doc(db,'userBackups',user.uid,'devices',deviceId));
   if(!snap.exists()){say('本设备尚无云端备份。其他设备的备份不会自动覆盖当前设备。');return}
   const b=snap.data(), data=JSON.parse(b.payload);
-  if(!confirm('找到本设备云端备份（文章 '+b.articleCount+' 篇，答题 '+b.attemptCount+' 次）。恢复会覆盖当前设备本机数据。建议先导出完整备份。确认继续？'))return;
-  bridge.restoreBackupState(data);
-  say('云端备份已恢复。');
+  if(!confirm('找到本设备云端备份（文章 '+b.articleCount+' 篇，答题 '+b.attemptCount+' 次）。恢复将合并到当前本机数据，跳过重复记录，不覆盖已有进度。历史成绩不会自动补传云端。确认继续？'))return;
+  const result=bridge.restoreBackupState(data);
+  say(`云端备份合并成功：新增 ${result.articles} 篇文章、${result.attempts} 次作答。`);
  }catch(err){say('恢复失败：'+err.message)}
 }
 const PENDING_KEY='readmate_pending_submissions_v32';
@@ -53,7 +53,10 @@ async function flushPending(){
    const pending=getPending();let done=0;
    for(const item of pending){
      if(item.studentUid!==user.uid)continue
-      if(bridge.deletedAttempts()[item.attemptId]){savePending(getPending().filter(p=>p.id!==item.id));continue};
+      const deletion=bridge.deletedAttempts()[item.attemptId];
+      if(deletion==='1'||deletion==='both'||deletion==='cloud-only'){savePending(getPending().filter(p=>p.id!==item.id));continue}
+      // '2' = only local: cloud submission must still be uploaded.
+
      if(!assignments.some(a=>a.cloudId===item.payload.assignmentId)){continue}
      try{await setDoc(doc(db,'submissions',item.id),{...item.payload,createdAt:serverTimestamp()});done++}
      catch(err){console.warn('云端补传失败',err);break}
@@ -68,36 +71,44 @@ function hiddenSubmissions(){try{return JSON.parse(localStorage.getItem(HIDDEN_S
 function isCloudRecordHidden(id){return !!hiddenSubmissions()[id]}
 function hideCloudRecord(id){const h=hiddenSubmissions();h[id]=true;localStorage.setItem(HIDDEN_SUBMISSIONS_KEY,JSON.stringify(h))}
 function chooseDeletion(){const v=prompt('删除方式：\\n1 = 本机和云端一起删除（默认）\\n2 = 仅删除本机\\n3 = 仅删除云端\\n\\n请输入 1、2 或 3：','1');if(v===null)return null;if(!['1','2','3'].includes(v.trim())){alert('请输入 1、2 或 3');return null}return v.trim()}
+let deletionBusy=false;
 async function deleteAttempt(localId,cloudId=null){
- if(!user){alert('请先登录账号，避免误删其他账号的记录。');return}
+ if(deletionBusy)return;
+ if(!user){alert('请先登录账号。');return}
  const local=bridge.getBackupState().attempts.find(a=>a.id===localId);
  const found=cloudId?submissions.find(s=>s.cloudId===cloudId):submissions.find(s=>s.localAttemptId===localId&&s.studentUid===user.uid);
+ const pending=getPending().filter(p=>p.attemptId===localId&&p.studentUid===user.uid);
+ if(!local&&!found&&!pending.length){alert('未找到这条答题记录，请重新打开页面后重试。');return}
  const mode=chooseDeletion();if(!mode)return;
- if((mode==='1'||mode==='3')&&!found){
-  // If submission is still pending, it has never reached Firestore.
-  const pending=getPending().filter(p=>p.attemptId===localId);
-  if(!pending.length){alert('无法确认这次成绩对应的云端记录。请先同步，或选择仅删除本机。');return}
+ if((mode==='1'||mode==='3')&&!found&&!pending.length){
+  alert('找不到这条记录对应的云端成绩，不能安全删除云端。可以选择仅删除本机。');return;
  }
+ if(mode==='2'&&!local){alert('当前设备没有这条本机记录，请选择仅删除云端。');return}
  if(!confirm('确定'+({1:'本机和云端一起删除',2:'仅删除本机',3:'仅删除云端'}[mode])+'这条答题记录吗？此操作不可撤销。'))return;
- const cloudKey=found?.cloudId;
- if(mode==='1'||mode==='3'){
-  if(found){
-   if(found.studentUid!==user.uid){alert('只能删除自己提交的成绩。');return}
-   try{await deleteDoc(doc(db,'submissions',cloudKey))}catch(err){alert('云端删除失败，本机未做任何删除：'+err.message);return}
+ deletionBusy=true;
+ try{
+  if(mode==='1'||mode==='3'){
+   if(found){
+    if(found.studentUid!==user.uid){alert('只能删除自己提交的云端成绩。');return}
+    try{await deleteDoc(doc(db,'submissions',found.cloudId))}
+    catch(err){alert('云端删除失败，本机未删除：'+err.message);return}
+   }
+   // Pending-only record is not in cloud. Cancel it to prevent re-upload.
+   if(localId)savePending(getPending().filter(p=>!(p.attemptId===localId&&p.studentUid===user.uid)));
+   if(found)hideCloudRecord(found.cloudId);
   }
-  // Always cancel queued upload after successful cloud deletion.
-  savePending(getPending().filter(p=>p.attemptId!==localId));
- }
- if(mode==='1'||mode==='2'){
-  if(localId)bridge.deleteLocalAttempt(localId,mode);
-  if(cloudKey)hideCloudRecord(cloudKey);
- }else{
-  // Keep local record and prevent a queued upload from recreating deleted cloud record.
-  if(localId)bridge.hideAttempt(localId,'cloud-only');
- }
- rerender();
- say('删除完成：'+({1:'本机和云端',2:'仅本机',3:'仅云端'}[mode]));
+  if(mode==='1'||mode==='2'){
+   if(localId)bridge.deleteLocalAttempt(localId,mode);
+   // Only-local deletion must not hide the existing cloud submission.
+  }else if(localId){
+   // Preserve local attempt and mark cloud-only to suppress future uploads.
+   bridge.hideAttempt(localId,'cloud-only');
+  }
+  rerender();
+  say('删除完成：'+({1:'本机和云端',2:'仅本机',3:'仅云端'}[mode]));
+ }finally{deletionBusy=false}
 }
+
 const e=bridge.escape;const fmt=t=>bridge.formatDate(t);const order=s=>(s.createdAt?.seconds?new Date(s.createdAt.seconds*1000).toISOString():s.clientTime||'');const attemptIndex=(s,all)=>all.filter(x=>x.assignmentId===s.assignmentId&&order(x)<=order(s)).length;
 const say=msg=>{const p=document.getElementById('cloudMsg');if(p)p.textContent=msg;else alert(msg)};
 function rerender(){if(bridge.currentTab()==='cloud')showCloud();bridge.renderHomeIfVisible()}
@@ -212,7 +223,7 @@ root.querySelectorAll('[data-publish]').forEach(btn=>btn.onclick=async()=>{
  }finally{btn.disabled=false}
 });
 root.querySelectorAll('[data-delete-cloud]').forEach(btn=>btn.onclick=()=>deleteAssignment(btn.dataset.deleteCloud));
-root.querySelectorAll('[data-delete-submission]').forEach(btn=>btn.onclick=()=>{const sub=submissions.find(x=>x.cloudId===btn.dataset.deleteSubmission);if(sub)deleteAttempt(sub.localAttemptId||'',sub.cloudId)});
+root.querySelectorAll('[data-delete-submission]').forEach(btn=>btn.onclick=ev=>{ev.preventDefault();ev.stopPropagation();const sub=submissions.find(x=>x.cloudId===btn.dataset.deleteSubmission);if(sub)deleteAttempt(sub.localAttemptId||'',sub.cloudId);else alert('未找到对应云端成绩，请刷新同步后重试。')});
 root.querySelectorAll('[data-study]').forEach(btn=>btn.onclick=()=>{const a=assignments.find(a=>a.cloudId===btn.dataset.study);if(a){bridge.upsertCloudArticle(a);bridge.openArticle('cloud-'+a.cloudId)}});
 }
 async function deleteAssignment(id){const a=assignments.find(x=>x.cloudId===id);if(!user||!a){alert('请先登录并等待云端任务同步完成。');return}if(a.teacherUid!==user.uid){alert('只有发布者才能删除云端任务。若只想移除本机文章，请使用「仅从本机移除」。');return}if(!confirm('确定永久删除「'+a.title+'」发给'+(a.studentUid===user.uid?'自己':'对象')+'的这一份云端任务？联网同步后接收者设备也会移除副本；历史成绩保留。此操作不可撤销。'))return;try{await deleteDoc(doc(db,'assignments',id));bridge.removeCloudArticles([id]);savePending(getPending().filter(x=>x.payload.assignmentId!==id));say('云端任务已删除。双方设备联网同步后会移除对应副本；历史成绩保留。');rerender()}catch(err){alert('删除失败：'+err.message)}}

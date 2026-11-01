@@ -16,8 +16,9 @@ service cloud.firestore {
     && request.resource.data.studentUid is string && request.resource.data.studentUid.size() >= 20
     && request.resource.data.title is string && request.resource.data.passage is string
     && request.resource.data.questions is list;
-   allow update, delete: if signedIn() && resource.data.teacherUid == request.auth.uid
+   allow update: if signedIn() && resource.data.teacherUid == request.auth.uid
     && request.resource.data.teacherUid == resource.data.teacherUid && request.resource.data.studentUid == resource.data.studentUid;
+   allow delete: if signedIn() && resource.data.teacherUid == request.auth.uid;
   }
   match /submissions/{id} {
    allow read: if signedIn() && (resource.data.studentUid == request.auth.uid || resource.data.teacherUid == request.auth.uid);
