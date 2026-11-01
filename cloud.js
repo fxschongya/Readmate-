@@ -1,10 +1,12 @@
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js';
 import {getAuth,onAuthStateChanged,createUserWithEmailAndPassword,signInWithEmailAndPassword,signOut} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
-import {getFirestore,collection,addDoc,doc,setDoc,query,where,onSnapshot,serverTimestamp} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
+import {getFirestore,collection,addDoc,doc,setDoc,query,where,onSnapshot,serverTimestamp,deleteDoc} from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
 const cfg=window.READMATE_FIREBASE_CONFIG;
 const bridge=window.readmateBridge;
 let auth,db,user=null,role=localStorage.getItem('rm_role')||'student',studentUid=localStorage.getItem('rm_student_uid')||'',unsubs=[],assignments=[],submissions=[];
 const PENDING_KEY='readmate_pending_submissions_v32';
+const seenKey=uid=>'rm_seen_cloud_'+uid;
+function seenCloud(uid){try{return JSON.parse(localStorage.getItem(seenKey(uid))||'[]')}catch{return []}}
 function getPending(){try{return JSON.parse(localStorage.getItem(PENDING_KEY)||'[]')}catch{return []}}
 function savePending(v){try{localStorage.setItem(PENDING_KEY,JSON.stringify(v))}catch(err){say('本机存储空间不足，无法保存待同步记录：'+err.message)}}
 let flushing=false;
@@ -15,6 +17,7 @@ async function flushPending(){
    const pending=getPending();let done=0;
    for(const item of pending){
      if(item.studentUid!==user.uid)continue;
+     if(!assignments.some(a=>a.cloudId===item.payload.assignmentId)){continue}
      try{await setDoc(doc(db,'submissions',item.id),{...item.payload,createdAt:serverTimestamp()});done++}
      catch(err){console.warn('云端补传失败',err);break}
      savePending(getPending().filter(p=>p.id!==item.id));
@@ -34,7 +37,10 @@ function setupListeners(){
  const refresh=()=>{
   assignments=[...new Map([...ownAssignments.values(),...receivedAssignments.values()].map(a=>[a.cloudId,a])).values()];
   submissions=[...new Map([...ownSubmissions.values(),...receivedSubmissions.values()].map(a=>[a.cloudId,a])).values()];
-  assignments.filter(a=>a.studentUid===user.uid).forEach(a=>bridge.upsertCloudArticle(a));
+  const received=assignments.filter(a=>a.studentUid===user.uid);
+  const old=seenCloud(user.uid);
+  bridge.syncCloudArticles(received,old);
+  localStorage.setItem(seenKey(user.uid),JSON.stringify([...new Set([...old,...received.map(a=>a.cloudId)])]));
   rerender();
  };
  for(const [field,bucket] of [['teacherUid',ownAssignments],['studentUid',receivedAssignments]]){
@@ -62,7 +68,7 @@ function publishedArchive(){
  for(const a of published){const d=publishDate(a);if(!grouped.has(d))grouped.set(d,[]);grouped.get(d).push(a)}
  return '<p class="tiny muted">按实际发布日期归档，点击日期查看文章；学习日期与发布日期分别显示。</p>'+[...grouped].sort(([a],[b])=>b.localeCompare(a)).map(([d,items])=>{
    items.sort((a,b)=>{const da=Number(a.day),db=Number(b.day);return Number.isFinite(da)&&Number.isFinite(db)?da-db:String(a.title||'').localeCompare(String(b.title||''))});
-   const content=items.map(a=>`<details class="item" style="margin:8px 0 0 8px"><summary style="cursor:pointer;padding:8px 2px"><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题阅读')}</b> <span class="tiny muted">${Array.isArray(a.questions)?a.questions.length:0} 题</span></summary><div style="padding:8px 0 4px 10px"><p class="tiny">学习日期：${e(a.studyDate||'未设置')}<br>发布日期：${e(d)}<br>阅读难度：${e(a.level||'未设置')}</p></div></details>`).join('');
+   const content=items.map(a=>`<details class="item" style="margin:8px 0 0 8px"><summary style="cursor:pointer;padding:8px 2px"><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题阅读')}</b> <span class="tiny muted">${Array.isArray(a.questions)?a.questions.length:0} 题</span></summary><div style="padding:8px 0 4px 10px"><p class="tiny">学习日期：${e(a.studyDate||'未设置')}<br>发布日期：${e(d)}<br>接收者：${a.studentUid===user.uid?'我自己':'对象'}<br>阅读难度：${e(a.level||'未设置')}</p><button class="danger" data-delete-cloud="${e(a.cloudId)}">删除这份云端任务</button></div></details>`).join('');
    return `<details class="item" style="margin-bottom:10px"><summary style="cursor:pointer;padding:5px 0"><b>📅 ${e(d)}</b> <span class="pill">${items.length} 篇文章</span></summary>${content}</details>`;
  }).join('');
 }
@@ -78,7 +84,7 @@ function studyArchive(list,makeItem,empty){
  }).join('');
 }
 function localPublishArchive(){return studyArchive(bridge.getArticles(),a=>`<div class="item row" style="margin:8px 0 0 8px"><span style="flex:1"><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题')}</b><div class="small">${e(a.level||'阅读')} · ${Array.isArray(a.questions)?a.questions.length:0} 题</div></span><button class="secondary" data-publish="${e(a.id)}">发布</button></div>`,'请先去「管理」导入题目');}
-function receivedArchive(){return studyArchive(assignments.filter(a=>a.studentUid===user.uid),a=>`<div class="item row" style="margin:8px 0 0 8px"><span style="flex:1"><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题')}</b><div class="small">${e(a.level||'阅读')} · ${Array.isArray(a.questions)?a.questions.length:0} 题</div></span><button class="secondary" data-study="${e(a.cloudId)}">开始阅读</button></div>`,'还没有收到新阅读；发布后保持联网，通常会自动出现。');}
+function receivedArchive(){return studyArchive(assignments.filter(a=>a.studentUid===user.uid),a=>`<div class="item row" style="margin:8px 0 0 8px"><span style="flex:1"><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题')}</b><div class="small">${e(a.level||'阅读')} · ${Array.isArray(a.questions)?a.questions.length:0} 题</div></span><button class="secondary" data-study="${e(a.cloudId)}">开始阅读${bridge.isCloudHidden(a.cloudId)?'（恢复本机）':''}</button></div>`,'还没有收到新阅读；发布后保持联网，通常会自动出现。');}
 function cloudHistory(historyRecords=submissions){
  if(!historyRecords.length)return '<p class="muted">还没有收到答题记录。</p>';
  const byDate=new Map();
@@ -132,15 +138,18 @@ root.querySelectorAll('[data-publish]').forEach(btn=>btn.onclick=async()=>{
   say(`已发布 ${successes}/${targets.length} 份。`+(errors.length?' 失败原因：'+errors.join('；'):''));
  }finally{btn.disabled=false}
 });
+root.querySelectorAll('[data-delete-cloud]').forEach(btn=>btn.onclick=()=>deleteAssignment(btn.dataset.deleteCloud));
 root.querySelectorAll('[data-study]').forEach(btn=>btn.onclick=()=>{const a=assignments.find(a=>a.cloudId===btn.dataset.study);if(a){bridge.upsertCloudArticle(a);bridge.openArticle('cloud-'+a.cloudId)}});
 }
-window.readmateCloud={render:showCloud,submit:async(article,answers,score,attempt)=>{
- if(!cfg||!user||!article.cloudId||article.studentUid!==user.uid){return}
+async function deleteAssignment(id){const a=assignments.find(x=>x.cloudId===id);if(!user||!a){alert('请先登录并等待云端任务同步完成。');return}if(a.teacherUid!==user.uid){alert('只有发布者才能删除云端任务。若只想移除本机文章，请使用「仅从本机移除」。');return}if(!confirm('确定永久删除「'+a.title+'」发给'+(a.studentUid===user.uid?'自己':'对象')+'的这一份云端任务？联网同步后接收者设备也会移除副本；历史成绩保留。此操作不可撤销。'))return;try{await deleteDoc(doc(db,'assignments',id));bridge.removeCloudArticles([id]);savePending(getPending().filter(x=>x.payload.assignmentId!==id));say('云端任务已删除。双方设备联网同步后会移除对应副本；历史成绩保留。');rerender()}catch(err){alert('删除失败：'+err.message)}}
+window.readmateCloud={deleteAssignment,render:showCloud,submit:async(article,answers,score,attempt)=>{
+ if(!cfg||!user||!article.cloudId||article.studentUid!==user.uid){return 'local'}
  const id=(user.uid+'_'+attempt.id).replace(/[^A-Za-z0-9_-]/g,'_');
  const wrongs=answers.flatMap((v,i)=>v===article.questions[i].answer?[]:[{question:article.questions[i].q,chosen:String.fromCharCode(65+v),correct:String.fromCharCode(65+article.questions[i].answer),explanation:article.questions[i].explanation}]);
  const payload={assignmentId:article.cloudId,teacherUid:article.teacherUid,studentUid:user.uid,title:article.title,day:article.day||null,studyDate:article.studyDate||article.publishedDate||'',score,total:article.questions.length,answers,wrongs,attemptNo:attempt.attemptNo||1,articleSnapshot:{title:article.title,level:article.level||'',day:article.day||null,studyDate:article.studyDate||'',passage:article.passage,questions:article.questions},clientTime:attempt.time};
  const pending=getPending();if(!pending.some(p=>p.id===id))pending.push({id,studentUid:user.uid,payload});savePending(pending);
  await flushPending();
- if(getPending().some(p=>p.id===id))alert('成绩已保存在本机，尚未同步到云端。请在「同步 → 我的云端提交」点击「重新上传」。');
+ if(getPending().some(p=>p.id===id)){alert('成绩已保存在本机，等待云端补传。请到「同步」点击重新上传。');return 'pending'}
+ return 'synced';
 }};
 if(cfg){try{const app=initializeApp(cfg);auth=getAuth(app);db=getFirestore(app);onAuthStateChanged(auth,u=>{user=u;setupListeners();if(user)flushPending()})}catch(err){console.error(err)}}
