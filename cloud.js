@@ -165,41 +165,35 @@ function setupListeners(){
 }
 function roleSet(next){role=next;localStorage.setItem('rm_role',next);setupListeners();flushPending()}
 function submissionDate(s){const t=order(s);return /^\d{4}-\d{2}-\d{2}/.test(t)?t.slice(0,10):'日期未知'}
+
+/* V4.10: cloud archives share the same collapsed year/month/day layout. */
+function cloudTreeArchive(entries,makeItem,emptyText='暂无文章',unit='篇',renderDay=null){
+ if(!entries.length)return '<p class="muted">'+e(emptyText)+'</p>';
+ const years=new Map();
+ for(const item of entries){const d=/^\d{4}-\d{2}-\d{2}$/.test(item.date||'')?item.date:null;
+  const y=d?d.slice(0,4):'日期未设置',m=d?d.slice(5,7):'未设置',day=d?d.slice(8):'未设置';
+  if(!years.has(y))years.set(y,new Map());const months=years.get(y);if(!months.has(m))months.set(m,new Map());const days=months.get(m);if(!days.has(day))days.set(day,[]);days.get(day).push(item.value);
+ }
+ const count=x=>[...x.values()].reduce((n,v)=>n+(v instanceof Map?count(v):v.length),0);
+ const sorted=x=>[...x].sort(([a],[b])=>b.localeCompare(a,'zh-CN'));
+ return '<div class="rm-tree">'+sorted(years).map(([y,months])=>'<details class="rm-tree-year"><summary>'+e(y)+(y==='日期未设置'?'':' 年')+' <span class="pill">'+count(months)+' '+e(unit)+'</span></summary>'+sorted(months).map(([m,days])=>'<details class="rm-tree-month"><summary>'+e(m)+(m==='未设置'?'':' 月')+' <span class="pill">'+count(days)+' '+e(unit)+'</span></summary>'+sorted(days).map(([d,items])=>'<details class="rm-tree-day"><summary>'+e(d)+(d==='未设置'?'':' 日')+' <span class="pill">'+items.length+' '+e(unit)+'</span></summary><div class="rm-tree-items">'+(renderDay?renderDay(items):items.map(makeItem).join(''))+'</div></details>').join('')+'</details>').join('')+'</details>').join('')+'</div>';
+}
 function publishedArchive(){
  const published=assignments.filter(a=>a.teacherUid===user.uid);
- if(!published.length)return '<p class="muted">暂无已发布文章。</p>';
- const grouped=new Map();
- const publishDate=a=>{
-   // Older posts may lack a publication date: use server creation time, never today's date.
-   const d=a.publishedDate||(a.createdAt?.seconds?fmt(a.createdAt.seconds*1000):'');
-   return /^\d{4}-\d{2}-\d{2}$/.test(d)?d:'日期未知';
- };
- for(const a of published){const d=publishDate(a);if(!grouped.has(d))grouped.set(d,[]);grouped.get(d).push(a)}
- return '<p class="tiny muted">按实际发布日期归档，点击日期查看文章；学习日期与发布日期分别显示。</p>'+[...grouped].sort(([a],[b])=>b.localeCompare(a)).map(([d,items])=>{
-   items.sort((a,b)=>{const da=Number(a.day),db=Number(b.day);return Number.isFinite(da)&&Number.isFinite(db)?da-db:String(a.title||'').localeCompare(String(b.title||''))});
-   const content=items.map(a=>`<details class="item" style="margin:8px 0 0 8px"><summary style="cursor:pointer;padding:8px 2px"><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题阅读')}</b> <span class="tiny muted">${Array.isArray(a.questions)?a.questions.length:0} 题</span></summary><div style="padding:8px 0 4px 10px"><p class="tiny">学习日期：${e(a.studyDate||'未设置')}<br>发布日期：${e(d)}<br>接收者：${a.studentUid===user.uid?'我自己':'对象'}<br>阅读难度：${e(a.level||'未设置')}</p><button class="danger" data-delete-cloud="${e(a.cloudId)}">删除这份云端任务</button></div></details>`).join('');
-   return `<details class="item" style="margin-bottom:10px"><summary style="cursor:pointer;padding:5px 0"><b><svg class="rm-inline-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3v4"/><path d="M17 3v4"/><path d="M4 9h16"/><path d="M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg> ${e(d)}</b> <span class="pill">${items.length} 篇文章</span></summary>${content}</details>`;
- }).join('');
+ const date=a=>{const d=a.publishedDate||(a.createdAt?.seconds?fmt(a.createdAt.seconds*1000):'');return /^\d{4}-\d{2}-\d{2}/.test(d)?d.slice(0,10):''};
+ return '<p class="tiny muted">按发布日期：年份 → 月份 → 日期 → 文章，默认全部收起。</p>'+cloudTreeArchive(published.map(a=>({date:date(a),value:a})),a=>`<details class="item"><summary><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题阅读')}</b></summary><div style="padding:8px"><p class="tiny">学习日期：${e(a.studyDate||'未设置')}<br>发布日期：${e(date(a)||'未设置')}<br>接收者：${a.studentUid===user.uid?'我自己':'对象'}</p><button class="danger" data-delete-cloud="${e(a.cloudId)}">删除这份云端任务</button></div></details>`,'暂无已发布文章');
 }
 function studyArchive(list,makeItem,empty){
- if(!list.length)return `<p class="muted">${e(empty)}</p>`;
- const buckets=new Map();
- const validDate=x=>/^\d{4}-\d{2}-\d{2}$/.test(x||'')?x:'日期未设置';
- for(const a of list){const date=validDate(a.studyDate||bridge.assignedDate(a)||'');if(!buckets.has(date))buckets.set(date,[]);buckets.get(date).push(a)}
- const rank=a=>Number.isInteger(Number(a.day))&&Number(a.day)>0?Number(a.day):999999;
- return '<p class="tiny muted">按学习日期归档；点击日期展开文章。未设置日期的文章集中收纳。</p>'+[...buckets].sort((a,b)=>a[0]==='日期未设置'?1:b[0]==='日期未设置'?-1:b[0].localeCompare(a[0])).map(([date,items])=>{
-   items.sort((a,b)=>rank(a)-rank(b)||String(a.title||'').localeCompare(String(b.title||'')));
-   return `<details class="item" style="margin-bottom:10px"><summary style="cursor:pointer;padding:7px 0"><b><svg class="rm-inline-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3v4"/><path d="M17 3v4"/><path d="M4 9h16"/><path d="M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg> ${e(date)}</b> <span class="pill">${items.length} 篇</span></summary>${items.map(makeItem).join('')}</details>`;
- }).join('');
+ return '<p class="tiny muted">按学习日期：年份 → 月份 → 日期 → 文章，默认全部收起。</p>'+cloudTreeArchive(list.map(a=>({date:a.studyDate||bridge.assignedDate(a)||'',value:a})),makeItem,empty);
 }
 function localPublishArchive(){return studyArchive(bridge.getArticles(),a=>`<div class="item row" style="margin:8px 0 0 8px"><span style="flex:1"><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题')}</b><div class="small">${e(a.level||'阅读')} · ${Array.isArray(a.questions)?a.questions.length:0} 题</div></span><button class="secondary" data-publish="${e(a.id)}">发布</button></div>`,'请先去「管理」导入题目');}
 function receivedArchive(){return studyArchive(assignments.filter(a=>a.studentUid===user.uid),a=>`<div class="item row" style="margin:8px 0 0 8px"><span style="flex:1"><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题')}</b><div class="small">${e(a.level||'阅读')} · ${Array.isArray(a.questions)?a.questions.length:0} 题</div></span><button class="secondary" data-study="${e(a.cloudId)}">开始阅读${bridge.isCloudHidden(a.cloudId)?'（恢复本机）':''}</button></div>`,'还没有收到新阅读；发布后保持联网，通常会自动出现。');}
 function cloudHistory(historyRecords=submissions){
+ historyRecords=historyRecords.filter(s=>!isCloudRecordHidden(s.cloudId));
  if(!historyRecords.length)return '<p class="muted">还没有收到答题记录。</p>';
  const byDate=new Map();
- historyRecords=historyRecords.filter(s=>!isCloudRecordHidden(s.cloudId));
  for(const s of historyRecords){const d=submissionDate(s);if(!byDate.has(d))byDate.set(d,[]);byDate.get(d).push(s)}
- return '<p class="tiny muted">按实际提交日期归档。点击日期 → 文章 → 第几次练习，查看完整记录；旧成绩不会删除。</p>'+[...byDate].sort((a,b)=>b[0].localeCompare(a[0])).map(([d,arr])=>{
+ return '<p class="tiny muted">按实际作答日期：年份 → 月份 → 日期 → 文章 → 第几次练习，默认收起；旧成绩不会删除。</p>'+cloudTreeArchive(historyRecords.map(s=>({date:submissionDate(s),value:s})),s=>'', '暂无答题记录', '次',arr=>{
    const byArticle=new Map();for(const s of arr){const key=s.assignmentId||s.title||'unknown';if(!byArticle.has(key))byArticle.set(key,[]);byArticle.get(key).push(s)}
    const groups=[...byArticle].map(([key,items])=>{
      items.sort((a,b)=>order(a).localeCompare(order(b)));
@@ -214,12 +208,12 @@ function cloudHistory(historyRecords=submissions){
          return `<div class="item"><b>${i+1}. ${e(q.q||'题目')}</b><p class="tiny">${s.studentUid===user.uid?'我的选择':'对方选择'}：${e(label(chosen))} ${chosen===correct?'<svg class="rm-inline-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>':'<svg class="rm-inline-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5l14 14"/><path d="M19 5 5 19"/></svg>'}<br>正确答案：${e(label(correct))}</p><p class="tiny muted">${e(q.explanation||'暂无解析')}</p></div>`;
        }).join('');
        const fallback=(s.wrongs||[]).map(w=>`<div class="item tiny"><svg class="rm-inline-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5l14 14"/><path d="M19 5 5 19"/></svg> ${e(w.question||'')}<br>${s.studentUid===user.uid?'我的选择':'对方选'} ${e(w.chosen||'')}；正确 ${e(w.correct||'')}<br>${e(w.explanation||'')}</div>`).join('');
-       return `<details style="margin:9px 0 0 10px"><div class="rm-cloud-attempt"><summary style="cursor:pointer;padding:10px 4px" onclick="this.closest('details').open=!this.closest('details').open">第 ${number} 次 · ${e(order(s).slice(11,16)||'时间未知')} · ${Number(s.score)||0}/${Number(s.total)||0}（${Math.round(100*(Number(s.score)||0)/Math.max(1,Number(s.total)||1))}%）</summary>${s.studentUid===user.uid?`<button type="button" class="rm-delete" data-delete-submission="${e(s.cloudId)}"><svg class="rm-inline-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v7"/><path d="M14 11v7"/><path d="M6 7l1 14h10l1-14"/><path d="M9 7V4h6v3"/></svg> 删除</button>`:''}</div><div style="padding:6px 0 12px">${s.articleSnapshot?.passage?'<details class="item"><summary>查看当时的阅读原文</summary><p style="white-space:pre-wrap">'+e(s.articleSnapshot.passage)+'</p></details>':''}${detail||fallback||'<p class="muted tiny">这条旧记录只保存了分数，暂无完整选项详情。</p>'}</div></details>`;
+       return `<details style="margin:9px 0 0 10px"><summary style="cursor:pointer;padding:10px 4px">第 ${number} 次 · ${e(order(s).slice(11,16)||'时间未知')} · ${Number(s.score)||0}/${Number(s.total)||0}（${Math.round(100*(Number(s.score)||0)/Math.max(1,Number(s.total)||1))}%）</summary><div class="rm-cloud-attempt">${s.studentUid===user.uid?`<button type="button" class="rm-delete" data-delete-submission="${e(s.cloudId)}"><svg class="rm-inline-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v7"/><path d="M14 11v7"/><path d="M6 7l1 14h10l1-14"/><path d="M9 7V4h6v3"/></svg> 删除</button>`:''}</div><div style="padding:6px 0 12px">${s.articleSnapshot?.passage?'<details class="item"><summary>查看当时的阅读原文</summary><p style="white-space:pre-wrap">'+e(s.articleSnapshot.passage)+'</p></details>':''}${detail||fallback||'<p class="muted tiny">这条旧记录只保存了分数，暂无完整选项详情。</p>'}</div></details>`;
      }).join('');
      return `<details style="margin:8px 0 0 8px"><summary style="cursor:pointer;padding:10px 4px"><b>${e(first.title||as?.title||'阅读')}</b> · ${e(first.day?'Day '+first.day:'未编号')} · ${items.length} 次</summary>${attempts}</details>`;
    }).join('');
-   return `<details class="item" style="margin-bottom:10px"><summary style="cursor:pointer;padding:5px 0"><b><svg class="rm-inline-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3v4"/><path d="M17 3v4"/><path d="M4 9h16"/><path d="M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg> ${e(d)}</b> <span class="pill">${arr.length} 次提交 · ${byArticle.size} 篇</span></summary>${groups}</details>`;
- }).join('');
+   return groups;
+ });
 }
 function showCloud(){const root=document.getElementById('app');if(!root)return;
 if(!cfg){root.innerHTML=`<h1><svg class="rm-inline-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 19h11a4 4 0 0 0 .5-8 6.5 6.5 0 0 0-12.4-1.3A4.7 4.7 0 0 0 7 19z"/></svg> 双人同步</h1><section class="card"><h2>首次配置 Firebase</h2><p>尚未填写 firebase-config.js。请依照压缩包内 README.md 配置 Firebase Auth、Firestore 和安全规则后重新部署。</p><p class="notice">本地阅读、答题、错题和生词仍然正常使用。</p></section>`;return}
