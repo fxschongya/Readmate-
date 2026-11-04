@@ -176,24 +176,22 @@ function cloudTreeArchive(entries,makeItem,emptyText='暂无文章',unit='篇',r
  }
  const count=x=>[...x.values()].reduce((n,v)=>n+(v instanceof Map?count(v):v.length),0);
  const sorted=x=>[...x].sort(([a],[b])=>b.localeCompare(a,'zh-CN'));
- return '<div class="rm-tree">'+sorted(years).map(([y,months])=>'<details class="rm-tree-year"><summary>'+e(y)+(y==='日期未设置'?'':' 年')+' <span class="pill">'+count(months)+' '+e(unit)+'</span></summary>'+sorted(months).map(([m,days])=>'<details class="rm-tree-month"><summary>'+e(m)+(m==='未设置'?'':' 月')+' <span class="pill">'+count(days)+' '+e(unit)+'</span></summary>'+sorted(days).map(([d,items])=>'<details class="rm-tree-day"><summary>'+e(d)+(d==='未设置'?'':' 日')+' <span class="pill">'+items.length+' '+e(unit)+'</span></summary><div class="rm-tree-items">'+(renderDay?renderDay(items):items.map(makeItem).join(''))+'</div></details>').join('')+'</details>').join('')+'</details>').join('')+'</div>';
+ return '<div class="rm-tree">'+sorted(years).map(([y,months])=>'<details class="rm-tree-year"><summary>'+e(y)+(y==='日期未设置'?'':' 年')+' <span class="pill">'+count(months)+' '+e(unit)+'</span></summary>'+sorted(months).map(([m,days])=>'<details class="rm-tree-month"><summary>'+e(m)+(m==='未设置'?'':' 月')+' <span class="pill">'+count(days)+' '+e(unit)+'</span></summary>'+sorted(days).map(([d,items])=>'<div class="rm-tree-day rm-tree-day-open"><div class="rm-tree-day-label">'+e(d)+(d==='未设置'?'':' 日')+' <span class="pill">'+items.length+' '+e(unit)+'</span></div><div class="rm-tree-items">'+(renderDay?renderDay(items):items.map(makeItem).join(''))+'</div></div>').join('')+'</details>').join('')+'</details>').join('')+'</div>';
 }
 function publishedArchive(){
  const published=assignments.filter(a=>a.teacherUid===user.uid);
  const date=a=>{const d=a.publishedDate||(a.createdAt?.seconds?fmt(a.createdAt.seconds*1000):'');return /^\d{4}-\d{2}-\d{2}/.test(d)?d.slice(0,10):''};
- return '<p class="tiny muted">按发布日期：年份 → 月份 → 日期 → 文章，默认全部收起。</p>'+cloudTreeArchive(published.map(a=>({date:date(a),value:a})),a=>`<details class="item"><summary><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题阅读')}</b></summary><div style="padding:8px"><p class="tiny">学习日期：${e(a.studyDate||'未设置')}<br>发布日期：${e(date(a)||'未设置')}<br>接收者：${a.studentUid===user.uid?'我自己':'对象'}</p><button class="danger" data-delete-cloud="${e(a.cloudId)}">删除这份云端任务</button></div></details>`,'暂无已发布文章');
+ return '<p class="tiny muted">按发布日期：年份 → 月份可折叠，展开月份后直接显示每天的文章。</p>'+cloudTreeArchive(published.map(a=>({date:date(a),value:a})),a=>`<details class="item"><summary><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题阅读')}</b></summary><div style="padding:8px"><p class="tiny">学习日期：${e(a.studyDate||'未设置')}<br>发布日期：${e(date(a)||'未设置')}<br>接收者：${a.studentUid===user.uid?'我自己':'对象'}</p><button class="danger" data-delete-cloud="${e(a.cloudId)}">删除这份云端任务</button></div></details>`,'暂无已发布文章');
 }
 function studyArchive(list,makeItem,empty){
- return '<p class="tiny muted">按学习日期：年份 → 月份 → 日期 → 文章，默认全部收起。</p>'+cloudTreeArchive(list.map(a=>({date:a.studyDate||bridge.assignedDate(a)||'',value:a})),makeItem,empty);
+ return '<p class="tiny muted">按学习日期：年份 → 月份可折叠，展开月份后直接显示每天的文章。</p>'+cloudTreeArchive(list.map(a=>({date:a.studyDate||bridge.assignedDate(a)||'',value:a})),makeItem,empty);
 }
 function localPublishArchive(){return studyArchive(bridge.getArticles(),a=>`<div class="item row" style="margin:8px 0 0 8px"><span style="flex:1"><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题')}</b><div class="small">${e(a.level||'阅读')} · ${Array.isArray(a.questions)?a.questions.length:0} 题</div></span><button class="secondary" data-publish="${e(a.id)}">发布</button></div>`,'请先去「管理」导入题目');}
 function receivedArchive(){return studyArchive(assignments.filter(a=>a.studentUid===user.uid),a=>`<div class="item row" style="margin:8px 0 0 8px"><span style="flex:1"><b>${e(bridge.dayLabel(a))} · ${e(a.title||'无标题')}</b><div class="small">${e(a.level||'阅读')} · ${Array.isArray(a.questions)?a.questions.length:0} 题</div></span><button class="secondary" data-study="${e(a.cloudId)}">开始阅读${bridge.isCloudHidden(a.cloudId)?'（恢复本机）':''}</button></div>`,'还没有收到新阅读；发布后保持联网，通常会自动出现。');}
 function cloudHistory(historyRecords=submissions){
  historyRecords=historyRecords.filter(s=>!isCloudRecordHidden(s.cloudId));
  if(!historyRecords.length)return '<p class="muted">还没有收到答题记录。</p>';
- const byDate=new Map();
- for(const s of historyRecords){const d=submissionDate(s);if(!byDate.has(d))byDate.set(d,[]);byDate.get(d).push(s)}
- return '<p class="tiny muted">按实际作答日期：年份 → 月份 → 日期 → 文章 → 第几次练习，默认收起；旧成绩不会删除。</p>'+cloudTreeArchive(historyRecords.map(s=>({date:submissionDate(s),value:s})),s=>'', '暂无答题记录', '次',arr=>{
+ return '<p class="tiny muted">按实际作答日期：年份 → 月份可折叠，日期及文章直接显示；点击文章可查看各次作答，旧成绩不会删除。</p>'+cloudTreeArchive(historyRecords.map(s=>({date:submissionDate(s),value:s})),s=>'', '暂无答题记录', '次',arr=>{
    const byArticle=new Map();for(const s of arr){const key=s.assignmentId||s.title||'unknown';if(!byArticle.has(key))byArticle.set(key,[]);byArticle.get(key).push(s)}
    const groups=[...byArticle].map(([key,items])=>{
      items.sort((a,b)=>order(a).localeCompare(order(b)));
